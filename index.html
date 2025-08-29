@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Wikipedia Literature Checker</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background: #f5f5f5;
+            color: #111;
+            transition: background 0.3s, color 0.3s;
+        }
+        
+        body.dark {
+            background: #1e1e1e;
+            color: #ddd;
+        }
+        
+        h1 {
+            text-align: center;
+        }
+        
+        #controls {
+            margin-bottom: 20px;
+            text-align: center;
+        }
+        
+        label {
+            margin-right: 10px;
+        }
+        
+        input,
+        select {
+            margin-right: 20px;
+        }
+        
+        button {
+            padding: 6px 12px;
+            cursor: pointer;
+        }
+        
+        #progress-container {
+            width: 80%;
+            margin: 10px auto;
+            background: #ddd;
+            border-radius: 5px;
+            overflow: hidden;
+            height: 20px;
+        }
+        
+        #progress-bar {
+            height: 100%;
+            width: 0;
+            background: #4caf50;
+            transition: width 0.2s;
+        }
+        
+        #results {
+            margin-top: 20px;
+        }
+        
+        .article {
+            background: white;
+            padding: 15px;
+            margin-bottom: 10px;
+            border-radius: 8px;
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+        }
+        
+        body.dark .article {
+            background: #2a2a2a;
+            box-shadow: 0 2px 5px rgba(255, 255, 255, 0.05);
+        }
+        
+        .entry {
+            margin-left: 20px;
+            padding: 5px;
+            border-left: 2px solid #ddd;
+        }
+        
+        .isbns {
+            color: green;
+        }
+        
+        .no-isbn {
+            color: red;
+        }
+        
+        .warning {
+            color: orange;
+        }
+        
+        details {
+            margin-top: 5px;
+        }
+        
+        pre {
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+        
+        mark {
+            background: yellow;
+            color: black;
+        }
+        
+        body.dark mark {
+            background: gold;
+            color: black;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>Wikipedia Literature Checker</h1>
+    <div id="controls">
+        <label>Topic: <input type="text" id="topic" value="Antike"></label>
+        <label>Max articles: <input type="number" id="maxArticles" value="20" min="1" max="250"></label>
+        <label>Mode:
+      <select id="mode" onchange="toggleRegexInput()">
+        <option value="normal">Missing ISBN</option>
+        <option value="title">Title checker</option>
+        <option value="isbn">ISBN checker</option>
+        <option value="regex">Custom regex</option>
+      </select>
+    </label>
+        <span id="regex-container" style="display:none">
+      <label>Pattern: <input type="text" id="regexPattern" placeholder="e.g. 202\\d"></label>
+      <label><input type="checkbox" id="regexWhole"> Whole article</label>
+    </span>
+        <button onclick="startRun()">Run</button>
+        <button onclick="toggleDarkMode()">🌙/☀️</button>
+    </div>
+
+    <div id="progress-container">
+        <div id="progress-bar"></div>
+    </div>
+
+    <div id="results"></div>
+
+    <script>
+        // Dark mode init
+        if (window.matchMedia('(prefers-color-scheme: dark)').matches) {
+            document.body.classList.add("dark");
+        }
+
+        function toggleDarkMode() {
+            document.body.classList.toggle("dark");
+        }
+
+        function toggleRegexInput() {
+            const mode = document.getElementById("mode").value;
+            document.getElementById("regex-container").style.display = (mode === "regex") ? "inline" : "none";
+        }
+
+        function allIsbnsRequireDotBeforeWithLocations(str) {
+            const re = /([^\s])?\s*ISBN/ig;
+            const failures = [];
+            let foundAny = false;
+            for (const m of str.matchAll(re)) {
+                foundAny = true;
+                const ch = m[1];
+                if (ch === '.') {
+                    const charPos = m.index;
+                    failures.push({
+                        index: charPos,
+                        foundChar: ch,
+                        context: str.slice(Math.max(0, charPos - 20), Math.min(str.length, charPos + 40))
+                    });
+                }
+            }
+            return {
+                foundAny,
+                failures
+            };
+        }
+
+        async function queryDnbByTitle(title) {
+            const url = `https://cors.isomorphic-git.org/https://services.dnb.de/sru/dnb?version=1.1&operation=searchRetrieve&query=title=${encodeURIComponent(title)}&recordSchema=MARC21-xml&maximumRecords=3`;
+            try {
+                const resp = await fetch(url);
+                if (!resp.ok) return {
+                    isbns: [],
+                    ms: 0
+                };
+                const xmlText = await resp.text();
+                return {
+                    isbns: [],
+                    ms: 0
+                }; // stub since parsing disabled here
+            } catch {
+                return {
+                    isbns: [],
+                    ms: 0
+                };
+            }
+        }
+
+        async function fetchArticlesByTopic(topic, maxArticles, mode) {
+            const searchUrl = `https://de.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(topic)}&format=json&origin=*&srlimit=${maxArticles}`;
+            const searchResp = await fetch(searchUrl);
+            if (!searchResp.ok) throw new Error("Wikipedia search failed");
+            const searchData = await searchResp.json();
+            const titles = searchData.query.search.map(s => s.title);
+
+            const results = [];
+            const progressBar = document.getElementById("progress-bar");
+
+            for (let i = 0; i < titles.length; i++) {
+                const title = titles[i];
+                const articleUrl = `https://de.wikipedia.org/w/api.php?action=query&prop=revisions&rvprop=content&format=json&titles=${encodeURIComponent(title)}&origin=*`;
+                const articleResp = await fetch(articleUrl);
+                if (!articleResp.ok) continue;
+                const articleData = await articleResp.json();
+                const page = Object.values(articleData.query.pages)[0];
+                if (!page || !page.revisions) continue;
+                const content = page.revisions[0]['*'];
+                if (!content) continue;
+
+                const litHeaderMatch = content.match(/(^|\n)==+\s*(Literatur|Literaturhinweise|Literatur und Quellen)\s*==+/i);
+                if (!litHeaderMatch && mode !== "regex") continue;
+
+                let literatureEntries = [];
+                if (litHeaderMatch) {
+                    let sectionStart = litHeaderMatch.index + litHeaderMatch[0].length;
+                    let rest = content.substring(sectionStart);
+                    let nextSectionMatch = rest.search(/\n==+/);
+                    if (nextSectionMatch !== -1) rest = rest.substring(0, nextSectionMatch);
+                    const lines = rest.split('\n').map(l => l.trim());
+                    literatureEntries = lines.filter(l => l.startsWith('*')).map(l => l.replace(/^\*\s*/, '').trim());
+                }
+
+                const entryResults = [];
+
+                for (const entry of literatureEntries) {
+                    let extractedTitle = null;
+                    const quoteMatch = entry.match(/['\u2018\u2019\u201C\u201D"]([^'"\u2018\u2019\u201C\u201D]{3,}?)['\u2018\u2019\u201C\u201D"]/);
+                    if (quoteMatch) extractedTitle = quoteMatch[1].trim();
+                    else {
+                        const beforeColon = entry.split(':')[0];
+                        if (beforeColon && beforeColon.length > 3) extractedTitle = beforeColon.trim();
+                    }
+
+                    let warnings = [];
+                    let hasHit = false;
+
+                    if (mode === "title") {
+                        if (entry.includes("''.")) {
+                            warnings.push("Contains '' before a dot");
+                            hasHit = true;
+                        }
+                    } else if (mode === "isbn") {
+                        const check = allIsbnsRequireDotBeforeWithLocations(entry);
+                        if (check.foundAny && check.failures.length > 0) {
+                            hasHit = true;
+                            warnings.push("Dot before ISBN found at positions: " + check.failures.map(f => f.index).join(", "));
+                        }
+                    } else if (mode === "regex" && !document.getElementById("regexWhole").checked) {
+                        const pattern = document.getElementById("regexPattern").value;
+                        if (pattern) {
+                            try {
+                                const regex = new RegExp(pattern, "i");
+                                if (regex.test(entry)) {
+                                    warnings.push("Matched custom regex");
+                                    hasHit = true;
+                                }
+                            } catch (e) {
+                                console.warn("Invalid regex:", e);
+                            }
+                        }
+                    }
+
+                    let isbns = [];
+                    if (mode === "normal" && !entry.includes("ISBN") && extractedTitle) {
+                        try {
+                            const out = await queryDnbByTitle(extractedTitle);
+                            isbns = out.isbns;
+                            // only push entries missing ISBN
+                            entryResults.push({
+                                entry,
+                                extractedTitle,
+                                isbns,
+                                warnings
+                            });
+                        } catch {}
+                    } else if (mode !== "normal" && hasHit) {
+                        entryResults.push({
+                            entry,
+                            extractedTitle,
+                            isbns,
+                            warnings
+                        });
+                    }
+                }
+
+
+                // whole article regex mode
+                if (mode === "regex" && document.getElementById("regexWhole").checked) {
+                    const pattern = document.getElementById("regexPattern").value;
+                    if (pattern) {
+                        try {
+                            const regex = new RegExp(pattern, "gi");
+                            const matches = [];
+                            for (const m of content.matchAll(regex)) {
+                                const start = Math.max(0, m.index - 40);
+                                const end = Math.min(content.length, m.index + m[0].length + 40);
+                                const context = content.slice(start, end).replace(/\n/g, " ");
+                                const highlighted = context.replace(m[0], `<mark>${m[0]}</mark>`);
+                                matches.push("..." + highlighted + "...");
+                            }
+                            if (matches.length > 0) {
+                                entryResults.push({
+                                    entry: "(whole article matched)",
+                                    extractedTitle: null,
+                                    isbns: [],
+                                    warnings: ["Matched custom regex in whole article"],
+                                    matches
+                                });
+                            }
+                        } catch (e) {
+                            console.warn("Invalid regex:", e);
+                        }
+                    }
+                }
+
+                if (entryResults.length > 0) {
+                    results.push({
+                        title,
+                        entries: entryResults
+                    });
+                }
+
+                progressBar.style.width = (((i + 1) / titles.length) * 100) + "%";
+            }
+            return results;
+        }
+
+        async function startRun() {
+            const topic = document.getElementById("topic").value;
+            const maxArticles = parseInt(document.getElementById("maxArticles").value);
+            const mode = document.getElementById("mode").value;
+            const resultsDiv = document.getElementById("results");
+            document.getElementById("progress-bar").style.width = "0%";
+            resultsDiv.innerHTML = `<p>Fetching articles for <b>${topic}</b>...</p>`;
+
+            try {
+                const results = await fetchArticlesByTopic(topic, maxArticles, mode);
+                resultsDiv.innerHTML = "";
+                results.forEach(art => {
+                    const artDiv = document.createElement("div");
+                    artDiv.className = "article";
+                    artDiv.innerHTML = `<h3>${art.title}</h3>`;
+                    art.entries.forEach((e, idx) => {
+                        const entryDiv = document.createElement("div");
+                        entryDiv.className = "entry";
+                        const isbnInfo = e.isbns.length > 0 ?
+                            `<span class='isbns'>ISBNs: ${e.isbns.join(", ")}</span>` :
+                            (mode === "normal" ? `<span class='no-isbn'>(no ISBNs found)</span>` : "");
+                        const warningInfo = e.warnings.length > 0 ? `<div class='warning'>⚠ ${e.warnings.join("; ")}</div>` : "";
+                        const matchesInfo = e.matches && e.matches.length > 0 ?
+                            `<div class='warning'>Matches:<pre>${e.matches.join("\n---\n")}</pre></div>` :
+                            "";
+                        entryDiv.innerHTML = `
+              <details>
+                <summary>[${idx + 1}] ${e.extractedTitle || "(no title)"} — ${isbnInfo}</summary>
+                ${warningInfo}
+                ${matchesInfo}
+                <pre>${e.entry}</pre>
+              </details>`;
+                        artDiv.appendChild(entryDiv);
+                    });
+                    resultsDiv.appendChild(artDiv);
+                });
+            } catch (e) {
+                resultsDiv.innerHTML = `<p style='color:red'>Error: ${e.message}</p>`;
+            }
+        }
+    </script>
+</body>
+
+</html>
