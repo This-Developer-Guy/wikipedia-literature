@@ -119,7 +119,7 @@
         <label>Topic: <input type="text" id="topic" value="Antike"></label>
         <label>Max articles: <input type="number" id="maxArticles" value="20" min="1" max="250"></label>
         <label>Mode:
-      <select id="mode" onchange="toggleRegexInput()">
+      <select id="mode" onchange="toggleRegexInput(); toggleISBNInput()">
         <option value="normal">Missing ISBN</option>
         <option value="title">Title checker</option>
         <option value="isbn">ISBN checker</option>
@@ -130,6 +130,11 @@
       <label>Pattern: <input type="text" id="regexPattern" placeholder="e.g. 202\\d"></label>
       <label><input type="checkbox" id="regexWhole"> Whole article</label>
     </span>
+        <span id="isbn-container" style="display:inline">
+            <label><input type="checkbox" id="suggestIsbn" onchange="setISBNMode();" checked> Suggest ISBN</label>
+            <select id="isbn-mode">
+            </select>
+        </span>
         <button onclick="startRun()">Run</button>
         <button onclick="toggleDarkMode()">🌙/☀️</button>
     </div>
@@ -141,6 +146,32 @@
     <div id="results"></div>
 
     <script>
+        (async() => {
+            const module =
+                await
+            import ('./catalogue-query-api/module.js');
+            window.module = module;
+
+            function populateISBNSelect() {
+                const select = document.getElementById('isbn-mode');
+                if (!select) return;
+
+                const combinations = window.module.getAllProviderCombinations();
+                console.log(combinations);
+
+                select.innerHTML = '';
+
+                combinations.forEach(combo => {
+                    const option = document.createElement('option');
+                    option.value = combo.id;
+                    option.textContent = combo.name;
+                    select.appendChild(option);
+                });
+            }
+
+            populateISBNSelect();
+        })();
+
         // Dark mode init
         if (window.matchMedia('(prefers-color-scheme: dark)').matches) {
             document.body.classList.add("dark");
@@ -153,6 +184,25 @@
         function toggleRegexInput() {
             const mode = document.getElementById("mode").value;
             document.getElementById("regex-container").style.display = (mode === "regex") ? "inline" : "none";
+        }
+
+        function toggleISBNInput() {
+            const mode = document.getElementById("mode").value;
+            document.getElementById("isbn-container").style.display = (mode === "normal") ? "inline" : "none";
+        }
+
+        function isSuggestIsbnOn() {
+            const el = document.getElementById("suggestIsbn");
+            return !!(el && el.checked);
+        }
+
+        function setISBNMode() {
+            let isbn_mode = document.getElementById("isbn-mode");
+            if (isSuggestIsbnOn()) {
+                isbn_mode.disabled = false;
+            } else {
+                isbn_mode.disabled = true;
+            }
         }
 
         function allIsbnsRequireDotBeforeWithLocations(str) {
@@ -177,25 +227,8 @@
             };
         }
 
-        async function queryDnbByTitle(title) {
-            const url = `https://cors.isomorphic-git.org/https://services.dnb.de/sru/dnb?version=1.1&operation=searchRetrieve&query=title=${encodeURIComponent(title)}&recordSchema=MARC21-xml&maximumRecords=3`;
-            try {
-                const resp = await fetch(url);
-                if (!resp.ok) return {
-                    isbns: [],
-                    ms: 0
-                };
-                const xmlText = await resp.text();
-                return {
-                    isbns: [],
-                    ms: 0
-                }; // stub since parsing disabled here
-            } catch {
-                return {
-                    isbns: [],
-                    ms: 0
-                };
-            }
+        function cleanTrailing(str) {
+            return str.replace(/[.,|F]+$/g, "");
         }
 
         async function fetchArticlesByTopic(topic, maxArticles, mode) {
@@ -236,11 +269,18 @@
 
                 for (const entry of literatureEntries) {
                     let extractedTitle = null;
+                    let extractedYear = null;
+                    const yearMatchRegex = /\s(\d{4})([f.,\s\/\|])/g;
+                    const yearMatch = entry.match(yearMatchRegex);
                     const quoteMatch = entry.match(/['\u2018\u2019\u201C\u201D"]([^'"\u2018\u2019\u201C\u201D]{3,}?)['\u2018\u2019\u201C\u201D"]/);
                     if (quoteMatch) extractedTitle = quoteMatch[1].trim();
                     else {
                         const beforeColon = entry.split(':')[0];
                         if (beforeColon && beforeColon.length > 3) extractedTitle = beforeColon.trim();
+                    }
+
+                    if (yearMatch) {
+                        extractedYear = cleanTrailing(yearMatch[0].trim());
                     }
 
                     let warnings = [];
@@ -272,24 +312,36 @@
                         }
                     }
 
-                    let isbns = [];
                     if (mode === "normal" && !entry.includes("ISBN") && extractedTitle) {
-                        try {
-                            const out = await queryDnbByTitle(extractedTitle);
-                            isbns = out.isbns;
-                            // only push entries missing ISBN
-                            entryResults.push({
-                                entry,
-                                extractedTitle,
-                                isbns,
-                                warnings
-                            });
-                        } catch {}
-                    } else if (mode !== "normal" && hasHit) {
+                        let isbns = [];
+                        if (isSuggestIsbnOn()) {
+                            try {
+                                const isbnMode = document.getElementById("isbn-mode").value;
+                                const out = await window.module.queryDBISBN(isbnMode, extractedTitle, extractedYear);
+                                let combined = null;
+                                if (out && out.combined) {
+                                    combined = out.combined;
+                                }
+                                if (Array.isArray(combined)) {
+                                    isbns = combined;
+                                } else if (combined && combined.isbns) {
+                                    isbns = combined.isbns;
+                                }
+                            } catch (e) {
+                                console.warn("ISBN suggestion failed:", e);
+                            }
+                        }
                         entryResults.push({
                             entry,
                             extractedTitle,
                             isbns,
+                            warnings
+                        });
+                    } else if (mode !== "normal" && hasHit) {
+                        entryResults.push({
+                            entry,
+                            extractedTitle,
+                            isbns: [],
                             warnings
                         });
                     }
@@ -363,12 +415,12 @@
                             `<div class='warning'>Matches:<pre>${e.matches.join("\n---\n")}</pre></div>` :
                             "";
                         entryDiv.innerHTML = `
-              <details>
-                <summary>[${idx + 1}] ${e.extractedTitle || "(no title)"} — ${isbnInfo}</summary>
-                ${warningInfo}
-                ${matchesInfo}
-                <pre>${e.entry}</pre>
-              </details>`;
+                <details>
+                  <summary>[${idx + 1}] ${e.extractedTitle || "(no title)"} ${(mode === "normal" && isSuggestIsbnOn()) ? "— " + isbnInfo : ""}</summary>
+                  ${warningInfo}
+                  ${matchesInfo}
+                  <pre>${e.entry}</pre>
+                </details>`;
                         artDiv.appendChild(entryDiv);
                     });
                     resultsDiv.appendChild(artDiv);
