@@ -1,0 +1,3 @@
+[submodule "catalogue-query-api"]
+	path = catalogue-query-api
+	url = https://github.com/This-Developer-Guy/catalogue-query-api
