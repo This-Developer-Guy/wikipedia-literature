@@ -123,6 +123,9 @@
         <option value="normal">Missing ISBN</option>
         <option value="title">Title checker</option>
         <option value="isbn">ISBN checker</option>
+        <option value="editor">Editor checker</option>
+        <option value="in-style">"In" Style</option>
+        <option value="year-range">Invalid Range</option>
         <option value="regex">Custom regex</option>
       </select>
     </label>
@@ -147,8 +150,8 @@
 
     <script>
         (async() => {
-            const module =
-                await
+            toggleISBNInput();
+            const module = await
             import ('./catalogue-query-api/module.js');
             window.module = module;
 
@@ -157,7 +160,6 @@
                 if (!select) return;
 
                 const combinations = window.module.getAllProviderCombinations();
-                console.log(combinations);
 
                 select.innerHTML = '';
 
@@ -167,9 +169,69 @@
                     option.textContent = combo.name;
                     select.appendChild(option);
                 });
+
+                const savedIsbnMode = localStorage.getItem('isbnMode');
+                if (savedIsbnMode) {
+                    select.value = savedIsbnMode;
+                }
             }
 
             populateISBNSelect();
+
+            function restoreSettings() {
+                const topic = localStorage.getItem('topic');
+                if (topic) document.getElementById('topic').value = topic;
+
+                const maxArticles = localStorage.getItem('maxArticles');
+                if (maxArticles) document.getElementById('maxArticles').value = maxArticles;
+
+                const mode = localStorage.getItem('mode');
+                if (mode) {
+                    document.getElementById('mode').value = mode;
+                    toggleRegexInput();
+                    toggleISBNInput();
+                }
+
+                const regexPattern = localStorage.getItem('regexPattern');
+                if (regexPattern) document.getElementById('regexPattern').value = regexPattern;
+
+                const regexWhole = localStorage.getItem('regexWhole');
+                if (regexWhole) document.getElementById('regexWhole').checked = (regexWhole === 'true');
+
+                const suggestIsbn = localStorage.getItem('suggestIsbn');
+                if (suggestIsbn) {
+                    document.getElementById('suggestIsbn').checked = (suggestIsbn === 'true');
+                }
+
+                setISBNMode();
+
+                const isbnMode = localStorage.getItem('isbnMode');
+                if (isbnMode) {
+                    const isbnSelect = document.getElementById('isbn-mode');
+                    if (isbnSelect) isbnSelect.value = isbnMode;
+                }
+            }
+
+            restoreSettings();
+
+            function saveSetting(key, value) {
+                localStorage.setItem(key, value);
+            }
+
+            document.getElementById('topic').addEventListener('input', e => saveSetting('topic', e.target.value));
+            document.getElementById('maxArticles').addEventListener('input', e => saveSetting('maxArticles', e.target.value));
+            document.getElementById('mode').addEventListener('change', e => {
+                saveSetting('mode', e.target.value);
+                toggleRegexInput();
+                toggleISBNInput();
+            });
+            document.getElementById('regexPattern').addEventListener('input', e => saveSetting('regexPattern', e.target.value));
+            document.getElementById('regexWhole').addEventListener('change', e => saveSetting('regexWhole', e.target.checked));
+            document.getElementById('suggestIsbn').addEventListener('change', e => {
+                saveSetting('suggestIsbn', e.target.checked);
+                setISBNMode();
+            });
+            document.getElementById('isbn-mode').addEventListener('change', e => saveSetting('isbnMode', e.target.value));
         })();
 
         // Dark mode init
@@ -291,6 +353,33 @@
                             warnings.push("Contains '' before a dot");
                             hasHit = true;
                         }
+                    } else if (mode === "editor") {
+                        let regex = /\(([Hh]g|hrsg)\.?\)/;
+                        let match = entry.match(regex);
+                        if (match != null) {
+                            warnings.push(`Found ${match[0]}`);
+                            hasHit = true;
+                        }
+                    } else if (mode === "in-style") {
+                        let regex_in = /\sin[,.:]/;
+                        let regex_punct = /\s[Ii]n[,.]/;
+                        let match_in = entry.match(regex_in);
+                        let match_punct = entry.match(regex_punct);
+                        if (match_in != null) {
+                            warnings.push("Contains 'in' instead of 'In'");
+                            hasHit = true;
+                        }
+                        if (match_punct != null) {
+                            warnings.push("Contains incorrect punctuation after");
+                            hasHit = true;
+                        }
+                    } else if (mode === "year-range") {
+                        let regex = /\b(1[0-9]{3}|20[0-4][0-9]|2050)\s*-\s*(1[0-9]{3}|20[0-4][0-9]|2050)\b(?![-\d])/;
+                        let match = entry.match(regex);
+                        if (match != null) {
+                            warnings.push(`Found year range without Dash`);
+                            hasHit = true;
+                        }
                     } else if (mode === "isbn") {
                         const check = allIsbnsRequireDotBeforeWithLocations(entry);
                         if (check.foundAny && check.failures.length > 0) {
@@ -347,7 +436,6 @@
                     }
                 }
 
-
                 // whole article regex mode
                 if (mode === "regex" && document.getElementById("regexWhole").checked) {
                     const pattern = document.getElementById("regexPattern").value;
@@ -403,7 +491,7 @@
                 results.forEach(art => {
                     const artDiv = document.createElement("div");
                     artDiv.className = "article";
-                    artDiv.innerHTML = `<h3>${art.title}</h3>`;
+                    artDiv.innerHTML = `<a href="${"https://de.wikipedia.org/wiki/" + art.title.replace(" ", "_")}"><h3>${art.title}</h3></a>`;
                     art.entries.forEach((e, idx) => {
                         const entryDiv = document.createElement("div");
                         entryDiv.className = "entry";
@@ -433,4 +521,3 @@
 </body>
 
 </html>
-
