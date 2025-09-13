@@ -125,7 +125,8 @@
         <option value="isbn">ISBN checker</option>
         <option value="editor">Editor checker</option>
         <option value="in-style">"In" Style</option>
-        <option value="year-range">Invalid Range</option>
+        <option value="range">Invalid Range</option>
+        <option value="linking">Linking checker</option>
         <option value="regex">Custom regex</option>
       </select>
     </label>
@@ -329,7 +330,7 @@
 
                 const entryResults = [];
 
-                for (const entry of literatureEntries) {
+                for (let entry of literatureEntries) {
                     let extractedTitle = null;
                     let extractedYear = null;
                     const yearMatchRegex = /\s(\d{4})([f.,\s\/\|])/g;
@@ -349,9 +350,41 @@
                     let hasHit = false;
 
                     if (mode === "title") {
-                        if (entry.includes("''.")) {
-                            warnings.push("Contains '' before a dot");
+                        let regex_title_colon = /''(?!https?:)[^']{2,}:[^']{2,}''/;
+                        let title_colon_match = entry.match(regex_title_colon);
+                        let regex_title_missing = /(?<!''.{1,100})(?<!([Ii]n|zugleich|ausgaben?|erweitert)):\s(?!'')/i;
+                        let title_missing_match = entry.match(regex_title_missing);
+                        let regex_title_wrong_spacing = /:\s{2,}''/;
+                        let title_wrong_spacing_match = entry.match(regex_title_wrong_spacing);
+                        if (title_colon_match != null) {
+                            warnings.push("Wrong subtitle definition");
                             hasHit = true;
+                            entry = highlightMatch(entry, /''[^']{2,}:[^']{2,}''/g);
+                        }
+                        if (title_missing_match != null) {
+                            warnings.push("Missing italic font for title");
+                            hasHit = true;
+                            entry = highlightMatch(entry, /(?<!''.{1,100})(?<!([Ii]n|zugleich|ausgaben?|erweitert)):\s(?!'')/gi);
+                        }
+                        if (title_wrong_spacing_match != null) {
+                            warnings.push("Too many spaces!");
+                            hasHit = true;
+                            entry = highlightMatch(entry, /(?<=:)\s{2,}''/g);
+                        }
+                        if (entry.includes("''.")) {
+                            warnings.push("Dot after italic");
+                            hasHit = true;
+                            entry = highlightMatch(entry, /''\./g);
+                        }
+                        if (entry.includes("'',")) {
+                            warnings.push("Invalid style");
+                            hasHit = true;
+                            entry = highlightMatch(entry, /'',/g);
+                        }
+                        if (entry.includes(",''")) {
+                            warnings.push("Invalid style");
+                            hasHit = true;
+                            entry = highlightMatch(entry, /,''/g);
                         }
                     } else if (mode === "editor") {
                         let regex = /\(([Hh]g|hrsg)\.?\)/;
@@ -359,6 +392,14 @@
                         if (match != null) {
                             warnings.push(`Found ${match[0]}`);
                             hasHit = true;
+                            entry = highlightMatch(entry, /\(([Hh]g|hrsg)\.?\)/g);
+                        }
+                        regex = /hrsg\.\svon/i;
+                        match = entry.match(regex);
+                        if (match != null) {
+                            warnings.push(`Found ${match[0]}`);
+                            hasHit = true;
+                            entry = highlightMatch(entry, /(hrsg\.|herausgegeben)\s(von|v\.)/gi);
                         }
                     } else if (mode === "in-style") {
                         let regex_in = /\sin[,.:]/;
@@ -368,23 +409,92 @@
                         if (match_in != null) {
                             warnings.push("Contains 'in' instead of 'In'");
                             hasHit = true;
+                            entry = highlightMatch(entry, /(?<=\s)(in[,.:])/g);
                         }
                         if (match_punct != null) {
                             warnings.push("Contains incorrect punctuation after");
                             hasHit = true;
+                            entry = highlightMatch(entry, /(?<=\s)([Ii]n[,.])/g);
                         }
-                    } else if (mode === "year-range") {
-                        let regex = /\b(1[0-9]{3}|20[0-4][0-9]|2050)\s*-\s*(1[0-9]{3}|20[0-4][0-9]|2050)\b(?![-\d])/;
-                        let match = entry.match(regex);
-                        if (match != null) {
-                            warnings.push(`Found year range without Dash`);
+                    } else if (mode === "linking") {
+                        function extractAuthors(text) {
+                            const lines = text.split(/\n+/);
+                            const authors = new Set();
+                            for (const line of lines) {
+                                if (line.trim().startsWith('{{')) continue;
+                                const lineWithoutLinks = line.replace(/\[\[.*?\]\]/g, '');
+                                const colonSplit = lineWithoutLinks.split(':');
+                                if (colonSplit.length > 1) {
+                                    const preColon = colonSplit[0];
+                                    const rawNames = preColon.split(',').map(name =>
+                                        name.replace(/\(.*?\)/g, '').trim()
+                                    );
+                                    for (const name of rawNames) {
+                                        const normalized = name
+                                            .replace(/&nbsp;/gi, ' ')
+                                            .replace(/\u00A0/g, ' ')
+                                            .trim();
+                                        if (name && name.length > 1 && normalized != "u. a.") authors.add(name);
+                                    }
+                                }
+                                const inMatch = lineWithoutLinks.match(/(?:In|in):\s*(.*?)(?=[:'"(])/i);
+                                if (inMatch) {
+                                    const inSection = inMatch[1];
+                                    const inNames = inSection.split(',').map(name =>
+                                        name.replace(/\(.*?\)/g, '').trim()
+                                    );
+                                    for (const name of inNames) {
+                                        if (name && name.length > 1) authors.add(name);
+                                    }
+                                }
+                            }
+
+                            return [...authors];
+                        }
+
+                        async function wikipediaArticleExists(title) {
+                            const endpoint = 'https://de.wikipedia.org/w/api.php';
+                            const url = `${endpoint}?action=query&titles=${encodeURIComponent(title)}&format=json&origin=*`;
+                            try {
+                                const response = await fetch(url);
+                                const data = await response.json();
+                                const pages = data.query.pages;
+                                const pageId = Object.keys(pages)[0];
+                                return pageId !== "-1";
+                            } catch (err) {
+                                console.error("Error checking article:", err);
+                                return false;
+                            }
+                        }
+                        let authors = extractAuthors(entry);
+                        for (let author of authors) {
+                            if (await wikipediaArticleExists(author)) {
+                                warnings.push("Potentially missing linking");
+                                hasHit = true;
+                                entry = highlightMatch(entry, new RegExp(author.replace(".", "\\."), "g"));
+                            }
+                        }
+                    } else if (mode === "range") {
+                        const regex_year = /\b(1[0-9]{3}|20[0-4][0-9]|2050)\s*[-–—]\s*(1[0-9]{3}|20[0-4][0-9]|2050)\b(?![-\d])/;
+                        const match_year = entry.match(regex_year);
+                        const regex_page = /S\.\s*(\d{1,})\s*-\s*(\d{1,})/;
+                        const match_page = entry.match(regex_page);
+                        if (match_year !== null) {
+                            warnings.push(`Found year range with dash`);
                             hasHit = true;
+                            entry = highlightMatch(entry, /\b(1[0-9]{3}|20[0-4][0-9]|2050)\s*[-–—]\s*(1[0-9]{3}|20[0-4][0-9]|2050)\b(?![-\d])/g);
+                        }
+                        if (match_page !== null) {
+                            warnings.push(`Found page range with dash`);
+                            hasHit = true;
+                            entry = highlightMatch(entry, /S\.\s*(\d{1,})\s*-\s*(\d{1,})/g);
                         }
                     } else if (mode === "isbn") {
                         const check = allIsbnsRequireDotBeforeWithLocations(entry);
                         if (check.foundAny && check.failures.length > 0) {
                             hasHit = true;
                             warnings.push("Dot before ISBN found at positions: " + check.failures.map(f => f.index).join(", "));
+                            entry = highlightMatch(entry, /\.\s*(?:(ISBN\s\d{1,}-\d{1,}-\d{1,}-\d{1,}))/g);
                         }
                     } else if (mode === "regex" && !document.getElementById("regexWhole").checked) {
                         const pattern = document.getElementById("regexPattern").value;
@@ -394,6 +504,7 @@
                                 if (regex.test(entry)) {
                                     warnings.push("Matched custom regex");
                                     hasHit = true;
+                                    entry = highlightMatch(entry, new RegExp(pattern, "gi"));
                                 }
                             } catch (e) {
                                 console.warn("Invalid regex:", e);
@@ -477,6 +588,10 @@
             return results;
         }
 
+        function highlightMatch(text, pattern) {
+            return text.replace(pattern, match => `<mark>${match}</mark>`);
+        }
+
         async function startRun() {
             const topic = document.getElementById("topic").value;
             const maxArticles = parseInt(document.getElementById("maxArticles").value);
@@ -507,7 +622,7 @@
                   <summary>[${idx + 1}] ${e.extractedTitle || "(no title)"} ${(mode === "normal" && isSuggestIsbnOn()) ? "— " + isbnInfo : ""}</summary>
                   ${warningInfo}
                   ${matchesInfo}
-                  <pre>${e.entry}</pre>
+                  <pre>${e.highlightedEntry || e.entry}</pre>
                 </details>`;
                         artDiv.appendChild(entryDiv);
                     });
