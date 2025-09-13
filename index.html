@@ -350,7 +350,7 @@
                     let hasHit = false;
 
                     if (mode === "title") {
-                        let regex_title_colon = /''(?!https?:)[^']{2,}:[^']{2,}''/;
+                        let regex_title_colon = /''(?!\[?https?:\/\/)[^']{2,}:[^']{2,}''/;
                         let title_colon_match = entry.match(regex_title_colon);
                         let regex_title_missing = /(?<!''.{1,100})(?<!([Ii]n|zugleich|ausgaben?|erweitert)):\s(?!'')/i;
                         let title_missing_match = entry.match(regex_title_missing);
@@ -359,7 +359,7 @@
                         if (title_colon_match != null) {
                             warnings.push("Wrong subtitle definition");
                             hasHit = true;
-                            entry = highlightMatch(entry, /''[^']{2,}:[^']{2,}''/g);
+                            entry = highlightMatch(entry, /''(?!\[?https?:\/\/)[^']{2,}:[^']{2,}''/g);
                         }
                         if (title_missing_match != null) {
                             warnings.push("Missing italic font for title");
